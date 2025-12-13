@@ -1,6 +1,4 @@
 numpy
 opencv-python
-mediapipe
-flask
-flask-cors
 requests
+

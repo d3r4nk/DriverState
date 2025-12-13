@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="vi">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Driver State Detection - AI Server</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
+    <style>
+        :root {
+            /* Global Background */
+            --bg-primary: #fef6e4;
+            --bg-secondary: #fef6e4;
+
+            /* Typography */
+            --text-headline: #001858;
+            --text-body: #172c66;
+            --text-muted: #4a5e8a;
+
+            /* Interactive Elements */
+            --primary-bg: #f582ae;
+            --primary-text: #001858;
+
+            /* Accents & Borders */
+            --accent-primary: #001858;
+            --accent-secondary: #8bd3dd;
+
+            /* Status Colors */
+            --success: #8bd3dd;
+            --warning: #f582ae;
+            --danger: #001858;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-body);
+        }
+
+        /* Custom Tailwind Classes */
+        .bg-primary-custom {
+            background-color: var(--primary-bg);
+        }
+
+        .text-primary-custom {
+            color: var(--primary-text);
+        }
+
+        .border-primary-custom {
+            border-color: var(--accent-primary);
+        }
+
+        .bg-accent-secondary {
+            background-color: var(--accent-secondary);
+        }
+
+        .text-headline {
+            color: var(--text-headline) !important;
+        }
+
+        .text-body {
+            color: var(--text-body) !important;
+        }
+
+        .bg-main {
+            background-color: var(--bg-primary);
+        }
+
+        .glass-effect {
+            background: rgba(254, 246, 228, 0.95);
+            backdrop-filter: blur(20px);
+            border: 2px solid #001858;
+        }
+
+        .bg-custom-beige {
+            background-color: #f3d2c1;
+        }
+
+        .bg-custom-cyan {
+            background-color: #8bd3dd;
+        }
+
+        .btn-primary-custom {
+            background: linear-gradient(135deg, var(--primary-bg) 0%, #e66f9c 100%);
+            color: var(--primary-text);
+            border: 1px solid rgba(245, 130, 174, 0.3);
+        }
+
+        .btn-primary-custom:hover {
+            background: linear-gradient(135deg, #e66f9c 0%, var(--primary-bg) 100%);
+            transform: translateY(-2px);
+            box-shadow: 0 12px 32px rgba(245, 130, 174, 0.3);
+        }
+
+        .btn-secondary-custom {
+            background: rgba(0, 24, 88, 0.1);
+            color: var(--accent-primary);
+            border: 1px solid rgba(0, 24, 88, 0.2);
+        }
+
+        .btn-secondary-custom:hover {
+            background: rgba(0, 24, 88, 0.15);
+            transform: translateY(-1px);
+        }
+
+        .btn-warning-custom {
+            background: linear-gradient(135deg, var(--accent-secondary) 0%, #6bc5d0 100%);
+            color: var(--primary-text);
+            border: 1px solid rgba(139, 211, 221, 0.4);
+        }
+
+        .btn-warning-custom:hover {
+            background: linear-gradient(135deg, #6bc5d0 0%, var(--accent-secondary) 100%);
+            transform: translateY(-2px);
+            box-shadow: 0 12px 32px rgba(139, 211, 221, 0.3);
+        }
+
+        .gradient-text {
+            background: linear-gradient(135deg, var(--accent-primary) 0%, var(--text-headline) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .stat-primary {
+            background: linear-gradient(135deg, rgba(245, 130, 174, 0.15) 0%, rgba(254, 246, 228, 0.7) 100%);
+            border: 1px solid rgba(245, 130, 174, 0.2);
+        }
+
+        .stat-secondary {
+            background: linear-gradient(135deg, rgba(139, 211, 221, 0.15) 0%, rgba(254, 246, 228, 0.7) 100%);
+            border: 1px solid rgba(139, 211, 221, 0.2);
+        }
+
+        .stat-time {
+            background: linear-gradient(135deg, rgba(0, 24, 88, 0.08) 0%, rgba(254, 246, 228, 0.9) 100%);
+            border: 1px solid rgba(0, 24, 88, 0.15);
+        }
+
+        @keyframes float {
+
+            0%,
+            100% {
+                transform: translateY(0px);
+            }
+
+            50% {
+                transform: translateY(-6px);
+            }
+        }
+
+        .floating {
+            animation: float 3s ease-in-out infinite;
+        }
+
+        .status-active {
+            background-color: var(--accent-secondary) !important;
+        }
+
+        .alert-active .alert-badge {
+            background: var(--primary-bg) !important;
+            color: var(--primary-text) !important;
+        }
+    </style>
+</head>
+
+<body class="bg-main min-h-screen py-12 px-4 sm:px-6 lg:px-8">
+    <div class="max-w-7xl mx-auto">
+        <!-- Header -->
+        <header class="text-center mb-16 lg:mb-20">
+            <h1 class="text-4xl lg:text-5xl font-bold gradient-text mb-6 leading-tight">
+                Driver State Detection
+            </h1>
+            <p class="text-xl text-body font-medium max-w-2xl mx-auto leading-relaxed">
+                Hệ thống phát hiện trạng thái tài xế sử dụng AI tiên tiến
+            </p>
+        </header>
+
+        <div class="grid grid-cols-1 xl:grid-cols-2 gap-10 lg:gap-12">
+            <!-- Main Video & Controls -->
+            <div class="space-y-10 lg:space-y-12">
+                <div class="bg-custom-cyan rounded-[6px] p-8 lg:p-12 shadow-2xl border-2 border-[#001858]">
+                    <div class="relative">
+                        <!-- Video Container -->
+                        <div
+                            class="relative bg-white rounded-[6px] overflow-hidden shadow-2xl group border-2 border-[#001858]">
+                            <video id="videoInput" class="w-full h-80 lg:h-96 object-cover rounded-[6px]" autoplay
+                                playsinline>
+                            </video>
+                            <canvas id="canvasOutput" class="absolute inset-0 w-full h-full rounded-[6px]"></canvas>
+
+                            <!-- Overlay Status -->
+                            <div
+                                class="absolute inset-0 bg-gradient-to-t from-[rgba(0,24,88,0.4)]/50 to-transparent opacity-0 group-hover:opacity-100 transition-all duration-700 flex items-end p-8">
+                                <div
+                                    class="status-indicator flex items-center space-x-4 bg-white/95 backdrop-blur-xl rounded-[6px] px-8 py-4 shadow-2xl border border-[rgba(139,211,221,0.3)]">
+                                    <div class="status-dot w-4 h-4 rounded-full bg-accent-secondary animate-pulse"
+                                        id="statusDot"></div>
+                                    <span id="statusText" class="font-semibold text-headline text-lg">Đang chờ kết
+                                        nối...</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Controls -->
+                        <div
+                            class="flex flex-wrap gap-4 justify-center mt-10 pt-10 border-t border-[rgba(0,24,88,0.1)]">
+                            <button id="startBtn"
+                                class="btn-primary-custom px-10 py-5 rounded-[6px] font-semibold text-lg shadow-xl hover:shadow-2xl transition-all duration-500 flex items-center space-x-3 group">
+                                <svg class="w-6 h-6 group-hover:scale-110 transition-transform duration-300" fill="none"
+                                    stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                        d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z">
+                                    </path>
+                                </svg>
+                                <span>Bắt đầu</span>
+                            </button>
+                            <button id="stopBtn"
+                                class="btn-primary-custom px-10 py-5 rounded-[6px] font-semibold text-lg shadow-xl hover:shadow-2xl transition-all duration-500 flex items-center space-x-3 group"
+                                disabled>
+                                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                        d="M10 9v6m4-6v6"></path>
+                                </svg>
+                                <span>Dừng</span>
+                            </button>
+                            <button id="resetBtn"
+                                class="btn-primary-custom px-10 py-5 rounded-[6px] font-semibold text-lg shadow-xl hover:shadow-2xl transition-all duration-500 flex items-center space-x-3 group">
+                                <svg class="w-6 h-6 group-hover:rotate-180 transition-transform duration-500"
+                                    fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                        d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15">
+                                    </path>
+                                </svg>
+                                <span>Reset</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Statistics -->
+                <div class="glass-effect rounded-[6px] p-8 shadow-2xl">
+                    <h2 class="text-3xl font-bold text-headline mb-10 flex items-center space-x-4">
+                        <svg class="w-10 h-10 text-primary-custom" fill="none" stroke="currentColor"
+                            viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z">
+                            </path>
+                        </svg>
+                        <span>Thống kê</span>
+                    </h2>
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-8">
+                        <div
+                            class="stat-card stat-primary text-center p-8 rounded-[6px] hover:shadow-2xl transition-all duration-500 cursor-pointer group">
+                            <div
+                                class="stat-label text-muted font-semibold text-sm uppercase tracking-wider mb-4 group-hover:text-headline transition-colors">
+                                FPS</div>
+                            <div class="stat-value text-4xl lg:text-5xl font-black gradient-text" id="fpsValue">0</div>
+                        </div>
+                        <div
+                            class="stat-card stat-secondary text-center p-8 rounded-[6px] hover:shadow-2xl transition-all duration-500 cursor-pointer group">
+                            <div
+                                class="stat-label text-muted font-semibold text-sm uppercase tracking-wider mb-4 group-hover:text-headline transition-colors">
+                                Frames đã xử lý</div>
+                            <div class="stat-value text-4xl lg:text-5xl font-black text-headline" id="processedFrames">0
+                            </div>
+                        </div>
+                        <div
+                            class="stat-card stat-time text-center p-8 rounded-[6px] hover:shadow-2xl transition-all duration-500 cursor-pointer group">
+                            <div
+                                class="stat-label text-muted font-semibold text-sm uppercase tracking-wider mb-4 group-hover:text-headline transition-colors">
+                                Thời gian hoạt động</div>
+                            <div class="stat-value text-4xl lg:text-5xl font-black text-primary-custom" id="uptime">0s
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- AI Results & Alerts -->
+            <div class="space-y-10 lg:space-y-12">
+                <!-- Metrics -->
+                <div class="bg-custom-beige rounded-[6px] p-8 shadow-2xl border-2 border-[#001858]">
+                    <h2 class="text-3xl font-bold text-headline mb-10 flex items-center space-x-4">
+                        <svg class="w-10 h-10 text-primary-custom" fill="none" stroke="currentColor"
+                            viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z">
+                            </path>
+                        </svg>
+                        <span>Kết quả AI</span>
+                    </h2>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+                        <div
+                            class="metric-card p-8 rounded-[6px] bg-white/70 backdrop-blur-sm border border-[rgba(0,24,88,0.1)] hover:shadow-2xl hover:-translate-y-2 transition-all duration-500 bg-gradient-to-br from-[rgba(245,130,174,0.08)] to-transparent">
+                            <div class="metric-label text-sm font-semibold text-muted mb-3 flex items-center space-x-3">
+                                <svg class="w-5 h-5 text-primary-custom" fill="currentColor" viewBox="0 0 20 20">
+                                    <path fill-rule="evenodd"
+                                        d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z"
+                                        clip-rule="evenodd"></path>
+                                </svg>
+                                <span>EAR (Eye Aspect Ratio)</span>
+                            </div>
+                            <div class="metric-value text-3xl font-bold text-headline" id="earValue">-</div>
+                        </div>
+                        <!-- Repeat similar pattern for other metrics with consistent styling -->
+                        <div class="metric-card p-8 rounded-[6px] bg-white/70 backdrop-blur-sm border border-[rgba(0,24,88,0.1)] hover:shadow-2xl hover:-translate-y-2 transition-all duration-500"
+                            id="gazeCard">
+                            <div class="metric-label text-sm font-semibold text-muted mb-3">Gaze Score</div>
+                            <div class="metric-value text-3xl font-bold text-headline" id="gazeValue">-</div>
+                        </div>
+                        <div class="metric-card p-8 rounded-[6px] bg-white/70 backdrop-blur-sm border border-[rgba(0,24,88,0.1)] hover:shadow-2xl hover:-translate-y-2 transition-all duration-500"
+                            id="perclosCard">
+                            <div class="metric-label text-sm font-semibold text-muted mb-3">PERCLOS</div>
+                            <div class="metric-value text-3xl font-bold text-headline" id="perclosValue">-</div>
+                        </div>
+                        <div
+                            class="metric-card p-8 rounded-[6px] bg-white/70 backdrop-blur-sm border border-[rgba(0,24,88,0.1)] hover:shadow-2xl hover:-translate-y-2 transition-all duration-500 bg-gradient-to-br from-[rgba(139,211,221,0.08)] to-transparent">
+                            <div class="metric-label text-sm font-semibold text-muted mb-3">Roll</div>
+                            <div class="metric-value text-3xl font-bold text-headline" id="rollValue">-</div>
+                        </div>
+                        <div
+                            class="metric-card p-8 rounded-[6px] bg-white/70 backdrop-blur-sm border border-[rgba(0,24,88,0.1)] hover:shadow-2xl hover:-translate-y-2 transition-all duration-500">
+                            <div class="metric-label text-sm font-semibold text-muted mb-3">Pitch</div>
+                            <div class="metric-value text-3xl font-bold text-headline" id="pitchValue">-</div>
+                        </div>
+                        <div
+                            class="metric-card p-8 rounded-[6px] bg-white/70 backdrop-blur-sm border border-[rgba(0,24,88,0.1)] hover:shadow-2xl hover:-translate-y-2 transition-all duration-500">
+                            <div class="metric-label text-sm font-semibold text-muted mb-3">Yaw</div>
+                            <div class="metric-value text-3xl font-bold text-headline" id="yawValue">-</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Alerts -->
+                <div class="bg-custom-beige rounded-[6px] p-8 shadow-2xl border-2 border-[#001858]">
+                    <h3 class="text-2xl font-bold text-headline mb-8 flex items-center space-x-4">
+                        <svg class="w-8 h-8 text-primary-custom" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z">
+                            </path>
+                        </svg>
+                        <span>Cảnh báo</span>
+                    </h3>
+                    <div class="space-y-4">
+                        <div class="alert-card flex items-center justify-between p-8 rounded-[6px] bg-gradient-to-r from-white/80 to-[rgba(254,246,228,0.7)] border border-[rgba(0,24,88,0.1)] hover:shadow-2xl hover:-translate-y-1 transition-all duration-500"
+                            id="asleepAlert">
+                            <div class="flex items-center space-x-4">
+                                <div
+                                    class="w-14 h-14 rounded-[6px] bg-gradient-to-br from-[rgba(245,130,174,0.2)] to-[rgba(0,24,88,0.1)] flex items-center justify-center border-2 border-[rgba(245,130,174,0.3)]">
+                                    <svg class="w-7 h-7 text-primary-custom" fill="none" stroke="currentColor"
+                                        viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                            d="M22 11.08V12a10 10 0 11-5.93-9.14"></path>
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                            d="M22 4L12 14.01l-3-3"></path>
+                                    </svg>
+                                </div>
+                                <span class="font-bold text-xl text-headline">Ngủ gật</span>
+                            </div>
+                            <span
+                                class="alert-badge inline-flex items-center px-6 py-3 rounded-[6px] font-bold text-lg bg-[rgba(0,24,88,0.1)] text-headline border border-[rgba(0,24,88,0.2)]">KHÔNG</span>
+                        </div>
+                        <!-- Similar pattern for other alerts -->
+                        <div class="alert-card flex items-center justify-between p-8 rounded-[6px] bg-gradient-to-r from-white/80 to-[rgba(254,246,228,0.7)] border border-[rgba(0,24,88,0.1)] hover:shadow-2xl hover:-translate-y-1 transition-all duration-500"
+                            id="tiredAlert">
+                            <div class="flex items-center space-x-4">
+                                <div
+                                    class="w-14 h-14 rounded-[6px] bg-gradient-to-br from-[rgba(139,211,221,0.2)] to-[rgba(0,24,88,0.1)] flex items-center justify-center border-2 border-[rgba(139,211,221,0.3)]">
+                                    <svg class="w-7 h-7 text-accent-primary" fill="none" stroke="currentColor"
+                                        viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                            d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                                    </svg>
+                                </div>
+                                <span class="font-bold text-xl text-headline">Mệt mỏi</span>
+                            </div>
+                            <span
+                                class="alert-badge inline-flex items-center px-6 py-3 rounded-[6px] font-bold text-lg bg-[rgba(0,24,88,0.1)] text-headline border border-[rgba(0,24,88,0.2)]">KHÔNG</span>
+                        </div>
+                        <div class="alert-card flex items-center justify-between p-8 rounded-[6px] bg-gradient-to-r from-white/80 to-[rgba(254,246,228,0.7)] border border-[rgba(0,24,88,0.1)] hover:shadow-2xl hover:-translate-y-1 transition-all duration-500"
+                            id="lookingAwayAlert">
+                            <div class="flex items-center space-x-4">
+                                <div
+                                    class="w-14 h-14 rounded-[6px] bg-gradient-to-br from-[rgba(245,130,174,0.15)] to-[rgba(139,211,221,0.15)] flex items-center justify-center border-2 border-[rgba(245,130,174,0.2)]">
+                                    <svg class="w-7 h-7 text-primary-custom" fill="none" stroke="currentColor"
+                                        viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                            d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                            d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z">
+                                        </path>
+                                    </svg>
+                                </div>
+                                <span class="font-bold text-xl text-headline">Nhìn đi chỗ khác</span>
+                            </div>
+                            <span
+                                class="alert-badge inline-flex items-center px-6 py-3 rounded-[6px] font-bold text-lg bg-[rgba(0,24,88,0.1)] text-headline border border-[rgba(0,24,88,0.2)]">KHÔNG</span>
+                        </div>
+                        <div class="alert-card flex items-center justify-between p-8 rounded-[6px] bg-gradient-to-r from-white/80 to-[rgba(254,246,228,0.7)] border border-[rgba(0,24,88,0.1)] hover:shadow-2xl hover:-translate-y-1 transition-all duration-500"
+                            id="distractedAlert">
+                            <div class="flex items-center space-x-4">
+                                <div
+                                    class="w-14 h-14 rounded-[6px] bg-gradient-to-br from-[rgba(0,24,88,0.1)] to-[rgba(139,211,221,0.1)] flex items-center justify-center border-2 border-[rgba(0,24,88,0.15)]">
+                                    <svg class="w-7 h-7 text-headline" fill="none" stroke="currentColor"
+                                        viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                            d="M13 10V3L4 14h7v7l9-11h-7z"></path>
+                                    </svg>
+                                </div>
+                                <span class="font-bold text-xl text-headline">Mất tập trung</span>
+                            </div>
+                            <span
+                                class="alert-badge inline-flex items-center px-6 py-3 rounded-[6px] font-bold text-lg bg-[rgba(0,24,88,0.1)] text-headline border border-[rgba(0,24,88,0.2)]">KHÔNG</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- History Panel -->
+        <div class="mt-20 bg-custom-beige rounded-[6px] p-10 lg:p-16 shadow-2xl border-2 border-[#001858]">
+            <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between mb-12">
+                <h2 class="text-3xl font-bold text-headline flex items-center space-x-4 mb-6 lg:mb-0">
+                    <svg class="w-10 h-10 text-primary-custom" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                    </svg>
+                    <span>Lịch sử biểu hiện</span>
+                </h2>
+                <div class="flex flex-wrap gap-4">
+                    <button id="refreshHistoryBtn"
+                        class="btn-primary-custom px-8 py-4 rounded-[6px] font-bold shadow-xl hover:shadow-2xl transition-all duration-500 flex items-center space-x-3">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15">
+                            </path>
+                        </svg>
+                        <span>Làm mới</span>
+                    </button>
+                    <button id="clearHistoryBtn"
+                        class="btn-warning-custom px-8 py-4 rounded-[6px] font-bold shadow-xl hover:shadow-2xl transition-all duration-500 flex items-center space-x-3">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16">
+                            </path>
+                        </svg>
+                        <span>Xóa lịch sử</span>
+                    </button>
+                </div>
+            </div>
+            <div class="history-list bg-gradient-to-r from-white/60 to-[rgba(254,246,228,0.5)] rounded-[6px] p-12 border-2 border-dashed border-[rgba(0,24,88,0.15)] flex items-center justify-center min-h-[240px]"
+                id="historyList">
+                <div class="text-center text-body">
+                    <svg class="w-20 h-20 mx-auto mb-6 text-[rgba(0,24,88,0.3)]" fill="none" stroke="currentColor"
+                        viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10">
+                        </path>
+                    </svg>
+                    <p class="text-2xl font-bold text-headline mb-3">Chưa có dữ liệu lịch sử</p>
+                    <p class="text-lg text-muted max-w-md mx-auto">Bắt đầu theo dõi để xem lịch sử trạng thái tài xế</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Connection Status - Floating -->
+    <div class="fixed bottom-8 right-8 flex items-center space-x-4 bg-white/95 backdrop-blur-xl rounded-[6px] px-8 py-5 shadow-2xl border-2 border-[#001858] z-50 floating"
+        id="connectionStatus">
+        <div class="connection-dot w-5 h-5 rounded-full bg-accent-secondary animate-pulse shadow-lg"></div>
+        <span id="connectionText" class="font-bold text-lg text-headline">Đã kết nối</span>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+
+</html>
