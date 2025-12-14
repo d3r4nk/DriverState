@@ -167,6 +167,11 @@
 </head>
 
 <body class="bg-main min-h-screen py-12 px-4 sm:px-6 lg:px-8">
+    <!-- Logout Button (always visible on main page) -->
+    <a href="/logout" id="logoutBtn"
+        class="fixed top-6 right-6 z-50 inline-flex items-center gap-2 bg-white/95 backdrop-blur-xl px-6 py-3 rounded-[6px] shadow-2xl border-2 border-[#001858] font-semibold text-headline hover:translate-y-[-1px] transition">
+        <span>Đăng xuất</span>
+    </a>
     <div class="max-w-7xl mx-auto">
         <!-- Header -->
         <header class="text-center mb-16 lg:mb-20">
@@ -473,6 +478,20 @@
         <div class="connection-dot w-5 h-5 rounded-full bg-accent-secondary animate-pulse shadow-lg"></div>
         <span id="connectionText" class="font-bold text-lg text-headline">Đã kết nối</span>
     </div>
+
+    <script>
+        // Prevent navigating back to previous pages after entering the main page
+        (function () {
+            try {
+                history.pushState(null, "", location.href);
+                window.addEventListener("popstate", function () {
+                    history.pushState(null, "", location.href);
+                });
+            } catch (e) {
+                // ignore
+            }
+        })();
+    </script>
 
     <script src="{{ url_for('static', filename='js/app.js') }}"></script>
 </body>
