@@ -19,11 +19,11 @@ class AIProcessor:
     
     def __init__(self, camera_params=None, 
                  ear_thresh=0.15,
-                 gaze_thresh=0.015,
-                 roll_thresh=20,
-                 pitch_thresh=20,
-                 yaw_thresh=20,
-                 ear_time_thresh=2.0,
+                 gaze_thresh=0.2,
+                 roll_thresh=35,
+                 pitch_thresh=35,
+                 yaw_thresh=28,
+                 ear_time_thresh=1.5,
                  gaze_time_thresh=2.0,
                  pose_time_thresh=2.5):
         """
@@ -353,11 +353,11 @@ class AIProcessor:
         self.att_scorer = AttScorer(
             t_now=t_now,
             ear_thresh=0.15,
-            gaze_thresh=0.015,
-            roll_thresh=20,
-            pitch_thresh=20,
-            yaw_thresh=20,
-            ear_time_thresh=2.0,
+            gaze_thresh=0.2,
+            roll_thresh=35,
+            pitch_thresh=35,
+            yaw_thresh=28,
+            ear_time_thresh=1.5,
             gaze_time_thresh=2.0,
             pose_time_thresh=2.5,
             verbose=False,

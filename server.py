@@ -1,831 +1,689 @@
-import os
-import time
+"""
+Server Flask để nhận frame từ Raspberry Pi client và xử lý phát hiện trạng thái người lái xe.
+
+Author: Driver State Detection Server
+Date: 2025
+"""
+
 import base64
-import threading
-import json
 import io
-import secrets
-import hashlib
-import logging
-from functools import wraps
-from datetime import datetime, timedelta
+import time
+from datetime import datetime
+from threading import Lock
 
 import cv2
+import mediapipe as mp
 import numpy as np
-import pyotp
-import qrcode
-from cryptography.fernet import Fernet
-from dotenv import load_dotenv
-from flask import (
-    Flask,
-    render_template,
-    render_template_string,
-    request,
-    jsonify,
-    session,
-    redirect,
-    url_for,
-)
-from flask_cors import CORS
-from flask_wtf.csrf import CSRFProtect
-from flask_limiter import Limiter
-from flask_limiter.util import get_remote_address
+from flask import Flask, jsonify, request, render_template, Response
 
-# Import AI processor
-from ai_processor import AIProcessor
+# Import các module xử lý từ driver_state_detection
+import sys
+sys.path.append('driver_state_detection')
 
+from driver_state_detection.attention_scorer import AttentionScorer
+from driver_state_detection.eye_detector import EyeDetector
+from driver_state_detection.pose_estimation import HeadPoseEstimator
+from driver_state_detection.utils import get_landmarks, load_camera_parameters
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# ============================================================================
+# Khởi tạo Flask App
+# ============================================================================
+app = Flask(__name__)
 
-load_dotenv()
+# ============================================================================
+# Cấu hình và khởi tạo các detector
+# ============================================================================
 
+# Thông số mặc định (có thể điều chỉnh)
+EAR_THRESH = 0.15           # Ngưỡng EAR để phát hiện mắt nhắm
+GAZE_THRESH = 0.2           # Ngưỡng Gaze Score
+EAR_TIME_THRESH = 2.0       # Thời gian nhắm mắt liên tục (giây)
+GAZE_TIME_THRESH = 2.0      # Thời gian nhìn không tập trung (giây)
+ROLL_THRESH = 20            # Ngưỡng góc roll (độ)
+PITCH_THRESH = 20           # Ngưỡng góc pitch (độ)
+YAW_THRESH = 28             # Ngưỡng góc yaw (độ)
+POSE_TIME_THRESH = 2.5      # Thời gian tư thế đầu sai (giây)
+PERCLOS_THRESH = 0.2        # Ngưỡng PERCLOS (20%)
 
-# ===== Security / Auth Config =====
-ENCRYPTION_KEY = os.environ.get("ENCRYPTION_KEY")
-if not ENCRYPTION_KEY:
-    # Avoid hard-crash if env not set; set ENCRYPTION_KEY to keep users.json decryptable after restart.
-    ENCRYPTION_KEY = Fernet.generate_key().decode("utf-8")
-    logger.warning("ENCRYPTION_KEY is not set. Generated a temporary key for this run.")
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-app = Flask(
-    __name__,
-    template_folder=os.path.join(BASE_DIR, "templates"),
-    static_folder=os.path.join(BASE_DIR, "static"),
+print("🚀 Đang khởi tạo MediaPipe FaceMesh...")
+# Khởi tạo MediaPipe Face Mesh
+face_mesh_detector = mp.solutions.face_mesh.FaceMesh(
+    static_image_mode=False,
+    min_detection_confidence=0.5,
+    min_tracking_confidence=0.5,
+    refine_landmarks=True,
 )
 
-app.secret_key = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
-app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(hours=24)
-app.config["SESSION_COOKIE_HTTPONLY"] = True
-app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+# Khởi tạo Eye Detector
+eye_detector = EyeDetector(show_processing=False)
 
-# CORS (keep compatible with client usage)
-CORS(app, supports_credentials=True)
-
-# CSRF protection (JSON endpoints are exempt where needed)
-csrf = CSRFProtect(app)
-
-# Rate limiting (in-memory)
-limiter = Limiter(
-    app=app,
-    key_func=get_remote_address,
-    default_limits=["1000 per day", "200 per hour"],
-    storage_uri="memory://",
-    swallow_errors=True,
-    headers_enabled=True,
+# Khởi tạo Head Pose Estimator (không cần camera parameters cho demo)
+head_pose_estimator = HeadPoseEstimator(
+    show_axis=False, 
+    camera_matrix=None, 
+    dist_coeffs=None
 )
-print("TEMPLATE SEARCH PATHS =", app.jinja_loader.searchpath)
 
-@app.after_request
-def add_security_headers(resp):
-    """Make browser back/forward behavior less likely to expose prior auth pages."""
-    try:
-        resp.headers.setdefault("X-Content-Type-Options", "nosniff")
-        resp.headers.setdefault("X-Frame-Options", "DENY")
-        resp.headers.setdefault("Referrer-Policy", "no-referrer")
+# Khởi tạo Attention Scorer
+attention_scorer = AttentionScorer(
+    t_now=time.perf_counter(),
+    ear_thresh=EAR_THRESH,
+    gaze_thresh=GAZE_THRESH,
+    perclos_thresh=PERCLOS_THRESH,
+    roll_thresh=ROLL_THRESH,
+    pitch_thresh=PITCH_THRESH,
+    yaw_thresh=YAW_THRESH,
+    ear_time_thresh=EAR_TIME_THRESH,
+    gaze_time_thresh=GAZE_TIME_THRESH,
+    pose_time_thresh=POSE_TIME_THRESH,
+    verbose=False,
+)
 
-        # Do not disable caching for static assets.
-        if not request.path.startswith("/static/"):
-            resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-            resp.headers["Pragma"] = "no-cache"
-            resp.headers["Expires"] = "0"
-    except Exception:
-        pass
-    return resp
+# Biến toàn cục để theo dõi FPS
+prev_time = time.perf_counter()
+fps_value = 0.0
 
-
-# ===== User & Client Key Storage =====
-USERS_FILE = "users.json"
-CLIENT_API_KEYS_FILE = "client_api_keys.json"
-
-
-def _fernet():
-    key = ENCRYPTION_KEY
-    if isinstance(key, str):
-        key = key.encode("utf-8")
-    return Fernet(key)
-
-
-def load_users():
-    if not os.path.exists(USERS_FILE):
-        return {}
-    try:
-        with open(USERS_FILE, "rb") as f:
-            content = f.read()
-        if not content:
-            return {}
-
-        # Try decrypt first
-        try:
-            decrypted = _fernet().decrypt(content).decode("utf-8")
-            return json.loads(decrypted)
-        except Exception:
-            # Fallback to plaintext JSON
-            return json.loads(content.decode("utf-8"))
-    except Exception as e:
-        logger.error(f"Failed to load users: {e}")
-        return {}
-
-
-def save_users(users: dict) -> None:
-    encrypted = _fernet().encrypt(json.dumps(users, ensure_ascii=False).encode("utf-8"))
-    with open(USERS_FILE, "wb") as f:
-        f.write(encrypted)
-
-
-def hash_password(password: str) -> str:
-    return hashlib.sha256(password.encode("utf-8")).hexdigest()
-
-
-def validate_password(password: str):
-    if len(password) < 8:
-        return False, "Password must be at least 8 characters"
-    if not any(c.isupper() for c in password):
-        return False, "Password must contain at least one uppercase letter"
-    if not any(c.islower() for c in password):
-        return False, "Password must contain at least one lowercase letter"
-    if not any(c.isdigit() for c in password):
-        return False, "Password must contain at least one number"
-    if not any(c in "!@#$%^&*()_+-=[]{}|;:,.<>?" for c in password):
-        return False, "Password must contain at least one special character"
-    return True, "Password is strong"
-
-
-def load_api_keys():
-    if not os.path.exists(CLIENT_API_KEYS_FILE):
-        default_keys = {
-            "default_client_key_12345": {
-                "name": "Default Client",
-                "created": datetime.now().isoformat(),
-                "active": True,
-            }
-        }
-        save_api_keys(default_keys)
-        return default_keys
-    try:
-        with open(CLIENT_API_KEYS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return {}
-
-
-def save_api_keys(keys: dict) -> None:
-    with open(CLIENT_API_KEYS_FILE, "w", encoding="utf-8") as f:
-        json.dump(keys, f, ensure_ascii=False, indent=2)
-
-
-def verify_api_key(api_key: str) -> bool:
-    keys = load_api_keys()
-    if api_key in keys:
-        return bool(keys[api_key].get("active", False))
-    return False
-
-
-def auth_or_api_key_required(f):
-    """Allow either logged-in session user OR a valid X-API-Key."""
-
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        if session.get("user"):
-            return f(*args, **kwargs)
-        api_key = request.headers.get("X-API-Key")
-        if api_key and verify_api_key(api_key):
-            return f(*args, **kwargs)
-        return jsonify({"error": "Unauthorized"}), 401
-
-    return decorated
-
-
-def login_required(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        if "user" not in session:
-            return redirect(url_for("login"))
-        return f(*args, **kwargs)
-
-    return decorated
-
-
-# ===== Account lockout  =====
-failed_login_attempts = {}  # {username: {'count': int, 'locked_until': datetime}}
-LOCKOUT_THRESHOLD = 5
-LOCKOUT_DURATION = timedelta(minutes=15)
-
-
-def is_account_locked(username: str):
-    if username in failed_login_attempts:
-        attempt = failed_login_attempts[username]
-        if attempt["count"] >= LOCKOUT_THRESHOLD:
-            if datetime.now() < attempt["locked_until"]:
-                return True, attempt["locked_until"]
-            del failed_login_attempts[username]
-    return False, None
-
-
-def record_failed_login(username: str) -> None:
-    if username not in failed_login_attempts:
-        failed_login_attempts[username] = {"count": 0, "locked_until": None}
-    failed_login_attempts[username]["count"] += 1
-    if failed_login_attempts[username]["count"] >= LOCKOUT_THRESHOLD:
-        failed_login_attempts[username]["locked_until"] = datetime.now() + LOCKOUT_DURATION
-
-
-def reset_failed_login(username: str) -> None:
-    if username in failed_login_attempts:
-        del failed_login_attempts[username]
-
-
-# ===== 2FA functions =====
-def generate_2fa_secret() -> str:
-    return pyotp.random_base32()
-
-
-def generate_qr_code(username: str, secret: str) -> str:
-    totp = pyotp.TOTP(secret)
-    uri = totp.provisioning_uri(name=username, issuer_name="Driver State Detection")
-
-    qr = qrcode.QRCode(version=1, box_size=10, border=5)
-    qr.add_data(uri)
-    qr.make(fit=True)
-    img = qr.make_image(fill_color="black", back_color="white")
-
-    buffered = io.BytesIO()
-    img.save(buffered, format="PNG")
-    return base64.b64encode(buffered.getvalue()).decode("utf-8")
-
-
-def verify_2fa_code(secret: str, code: str) -> bool:
-    totp = pyotp.TOTP(secret)
-    return bool(totp.verify(code, valid_window=1))
-
-
-# ===== Login/Register UI =====
-LOGIN_HTML = """<!DOCTYPE html>
-<html><head><meta charset=\"utf-8\"><title>Login</title>
-<meta http-equiv=\"Cache-Control\" content=\"no-store\" />
-<meta http-equiv=\"Pragma\" content=\"no-cache\" />
-<meta http-equiv=\"Expires\" content=\"0\" />
-<style>
-*{margin:0;padding:0;box-sizing:border-box}
-:root {--primary:#5882aa;--primary-dark:#466786;}
-body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background-image:url('/static/images/Background.png');background-size:cover;background-position:center;background-attachment:fixed;min-height:100vh;display:flex;align-items:center;justify-content:center;}
-.container{background:rgba(255,255,255,0.35);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);padding:40px;border-radius:20px;box-shadow:0 10px 40px rgba(0,0,0,.25);max-width:450px;width:100%;border:1px solid rgba(255,255,255,0.3);}
-h1{text-align:center;color:var(--primary);margin-bottom:30px}
-input{width:100%;padding:12px;margin:10px 0;border:2px solid var(--primary);border-radius:10px;background:rgba(255,255,255,0.6);}
-input:focus{border-color:var(--primary-dark);box-shadow:0 0 6px rgba(88,130,170,0.6)}
-button{width:100%;padding:14px;background:var(--primary);color:#fff;border:none;border-radius:10px;font-size:1.1em;cursor:pointer;margin-top:10px;transition:0.25s;}
-button:hover{background:var(--primary-dark)}
-.msg{padding:10px;margin:10px 0;border-radius:8px;display:none}
-.msg.error{background:rgba(255,80,80,0.2);color:#c0392b}
-.msg.info{background:rgba(88,130,170,0.15);color:var(--primary-dark)}
-.otp-step{display:none}
-a{color:var(--primary);font-weight:600}
-a:hover{color:var(--primary-dark)}
-</style>
-</head>
-<body>
-<div class=\"container\">
-  <h1>Login</h1>
-  <div id=\"msg\" class=\"msg\"></div>
-  <div id=\"cred-step\">
-    <input type=\"text\" id=\"username\" placeholder=\"Username\" autocomplete=\"username\">
-    <input type=\"password\" id=\"password\" placeholder=\"Password\" autocomplete=\"current-password\">
-    <button onclick=\"step1()\">Continue</button>
-  </div>
-  <div id=\"otp-step\" class=\"otp-step\">
-    <p style=\"text-align:center;margin-bottom:15px\">Enter OTP from Authenticator</p>
-    <input type=\"text\" id=\"otp\" maxlength=\"6\" placeholder=\"000000\" inputmode=\"numeric\">
-    <button onclick=\"step2()\">Verify</button>
-  </div>
-  <div style=\"text-align:center;margin-top:20px\"><a href=\"/register\">Register</a></div>
-</div>
-<script>
-async function step1(){
-  const u=document.getElementById('username').value,
-        p=document.getElementById('password').value,
-        m=document.getElementById('msg');
-  try{
-    const r=await fetch('/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})});
-    const d=await r.json();
-    if(r.ok){
-      if(d.status==='otp_required'){
-        document.getElementById('cred-step').style.display='none';
-        document.getElementById('otp-step').style.display='block';
-        m.textContent=d.message; m.className='msg info'; m.style.display='block';
-        history.replaceState(null,'',location.href);
-      } else if(d.status==='success'){
-        window.location.replace(d.redirect);
-      }
-    } else {
-      m.textContent=d.error; m.className='msg error'; m.style.display='block';
-    }
-  } catch(e){ m.textContent='Error'; m.className='msg error'; m.style.display='block'; }
+# Biến toàn cục để throttle (giới hạn tần suất) cảnh báo
+last_alert_times = {
+    'tired': 0.0,
+    'looking_away': 0.0,
+    'distracted': 0.0
 }
-async function step2(){
-  const o=document.getElementById('otp').value,
-        m=document.getElementById('msg');
-  try{
-    const r=await fetch('/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({otp:o})});
-    const d=await r.json();
-    if(r.ok && d.status==='success'){ window.location.replace(d.redirect); }
-    else { m.textContent=d.error; m.className='msg error'; m.style.display='block'; }
-  } catch(e){ m.textContent='Error'; m.className='msg error'; m.style.display='block'; }
-}
-</script>
-</body></html>"""
+ALERT_THROTTLE_SECONDS = 3.0  # Gửi cảnh báo không nghiêm trọng mỗi 3 giây
+
+# Biến toàn cục để theo dõi thống kê
+start_time = time.perf_counter()
+processed_frames_count = 0
+history_data = []  # Lưu lịch sử cảnh báo
+MAX_HISTORY_SIZE = 100  # Giới hạn số lượng lịch sử
+
+# Biến toàn cục để lưu frame stream từ Raspberry Pi
+latest_frame = None  # Frame mới nhất từ client
+latest_processed_frame = None  # Frame đã xử lý (có vẽ landmarks, metrics)
+frame_lock = Lock()  # Lock để đồng bộ truy cập frame
+last_result = None  # Kết quả xử lý mới nhất
+
+print("✅ Server đã sẵn sàng!")
+
+# ============================================================================
+# Helper Functions
+# ============================================================================
+
+def decode_frame_from_base64(base64_string):
+    """
+    Decode frame từ chuỗi base64.
+    
+    Args:
+        base64_string: Chuỗi base64 (có thể có prefix 'data:image/jpeg;base64,')
+    
+    Returns:
+        numpy.ndarray: Frame ở định dạng BGR (OpenCV)
+    """
+    # Loại bỏ prefix nếu có
+    if ',' in base64_string:
+        base64_string = base64_string.split(',')[1]
+    
+    # Decode base64
+    img_bytes = base64.b64decode(base64_string)
+    
+    # Chuyển bytes thành numpy array
+    img_array = np.frombuffer(img_bytes, dtype=np.uint8)
+    
+    # Decode JPEG thành OpenCV image
+    frame = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+    
+    return frame
 
 
-REGISTER_HTML = """<!DOCTYPE html>
-<html><head><meta charset=\"utf-8\"><title>Register</title>
-<meta http-equiv=\"Cache-Control\" content=\"no-store\" />
-<meta http-equiv=\"Pragma\" content=\"no-cache\" />
-<meta http-equiv=\"Expires\" content=\"0\" />
-<style>
-*{margin:0;padding:0;box-sizing:border-box}
-:root{--primary:#5882aa;--primary-dark:#466786;}
-body{font-family:'Segoe UI',system-ui,sans-serif;background-image:url('/static/images/Background.png');background-size:cover;background-position:center;background-attachment:fixed;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;}
-.container{background:rgba(255,255,255,0.35);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);padding:40px;border-radius:20px;max-width:500px;width:100%;border:1px solid rgba(255,255,255,0.3);box-shadow:0 10px 40px rgba(0,0,0,.25);}
-h1{text-align:center;color:var(--primary);margin-bottom:30px;}
-input{width:100%;padding:12px;margin:10px 0;border:2px solid var(--primary);border-radius:10px;background:rgba(255,255,255,0.6);font-size:.95em;}
-input:focus{outline:none;border-color:var(--primary-dark);box-shadow:0 0 6px rgba(88,130,170,0.5)}
-label{display:block;margin:10px 0 5px;color:#333;font-weight:600;font-size:.9em}
-button{width:100%;padding:14px;background:var(--primary);color:#fff;border:none;border-radius:10px;font-size:1.1em;cursor:pointer;margin-top:10px;transition:0.25s;}
-button:hover{background:var(--primary-dark);transform:translateY(-2px)}
-button:active{transform:translateY(0)}
-button:disabled{opacity:0.6;cursor:not-allowed}
-button.back{background:#6c757d}
-button.back:hover{background:#5a6268}
-.msg{padding:12px;margin:10px 0;border-radius:8px;display:none;font-size:.9em}
-.msg.error{background:rgba(255,80,80,0.2);color:#c0392b;border-left:4px solid #c0392b}
-.msg.success{background:rgba(80,255,80,0.2);color:#2e8b57;border-left:4px solid #2e8b57}
-.msg.info{background:rgba(88,130,170,0.15);color:var(--primary-dark);border-left:4px solid var(--primary-dark)}
-.qr{text-align:center;margin:20px 0;padding:20px;background:rgba(255,255,255,0.4);border-radius:10px}
-.qr img{max-width:250px;border-radius:10px;box-shadow:0 4px 12px rgba(0,0,0,.2)}
-.password-requirements{background:rgba(255,255,255,0.5);padding:15px;border-radius:8px;margin:10px 0;font-size:.85em;border-left:4px solid var(--primary);}
-.password-requirements strong{color:#333}
-.form-footer{text-align:center;margin-top:20px;padding-top:20px;border-top:1px solid rgba(255,255,255,0.4)}
-.form-footer a{color:var(--primary);font-weight:600;text-decoration:none}
-.form-footer a:hover{color:var(--primary-dark)}
-.otp-step{display:none}
-</style>
-</head>
-<body>
-<div class=\"container\">
-  <h1>Register</h1>
-  <div id=\"msg\" class=\"msg\"></div>
-  <div id=\"cred-step\">
-    <label>Username</label>
-    <input type=\"text\" id=\"username\" placeholder=\"Enter username (min 3 chars)\" minlength=\"3\" required>
-    <label>Password</label>
-    <input type=\"password\" id=\"password\" placeholder=\"Enter password (min 8 chars)\" minlength=\"8\" required>
-    <div class=\"password-requirements\">
-      <strong>Password must contain:</strong>
-      <ul>
-        <li>At least 8 characters</li>
-        <li>One uppercase letter</li>
-        <li>One lowercase letter</li>
-        <li>One number</li>
-        <li>One special character (!@#$%^&*)</li>
-      </ul>
-    </div>
-    <label>Confirm Password</label>
-    <input type=\"password\" id=\"confirm\" placeholder=\"Re-enter password\" required>
-    <button onclick=\"step1()\">Continue</button>
-  </div>
-  <div id=\"otp-step\" class=\"otp-step\">
-    <div class=\"qr\" id=\"qr\"></div>
-    <p style=\"text-align:center;margin-bottom:15px;color:#333\">Scan QR code using Google Authenticator</p>
-    <label>Enter OTP</label>
-    <input type=\"text\" id=\"otp\" maxlength=\"6\" placeholder=\"000000\" pattern=\"[0-9]{6}\" required>
-    <button onclick=\"step2()\">Activate Account</button>
-    <button class=\"back\" onclick=\"backToStep1()\">Back</button>
-  </div>
-  <div class=\"form-footer\">Already have an account? <a href=\"/login\">Login here</a></div>
-</div>
-<script>
-async function step1(){
-  const u=document.getElementById('username').value.trim();
-  const p=document.getElementById('password').value;
-  const c=document.getElementById('confirm').value;
-  const m=document.getElementById('msg');
-  if(!u||!p||!c){m.textContent='Please fill all fields';m.className='msg error';m.style.display='block';return;}
-  if(p!==c){m.textContent='Passwords do not match';m.className='msg error';m.style.display='block';return;}
-  try{
-    const r=await fetch('/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})});
-    const d=await r.json();
-    if(r.ok && d.status==='qr_generated'){
-      document.getElementById('cred-step').style.display='none';
-      document.getElementById('otp-step').style.display='block';
-      document.getElementById('qr').innerHTML='<img src="data:image/png;base64,'+d.qr_code+'" alt="QR Code">';
-      m.textContent=d.message; m.className='msg info'; m.style.display='block';
-      history.replaceState(null,'',location.href);
-    } else {
-      m.textContent=d.error||'Registration failed'; m.className='msg error'; m.style.display='block';
-    }
-  } catch(e){ m.textContent='Network error'; m.className='msg error'; m.style.display='block'; }
-}
-async function step2(){
-  const o=document.getElementById('otp').value.trim();
-  const m=document.getElementById('msg');
-  if(!o||o.length!==6){m.textContent='Please enter a valid 6-digit OTP';m.className='msg error';m.style.display='block';return;}
-  try{
-    const r=await fetch('/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({otp:o})});
-    const d=await r.json();
-    if(r.ok && d.status==='success'){
-      m.textContent=d.message; m.className='msg success'; m.style.display='block';
-      setTimeout(()=>{window.location.replace('/login');},800);
-    } else {
-      m.textContent=d.error||'OTP verification failed'; m.className='msg error'; m.style.display='block';
-    }
-  } catch(e){ m.textContent='Network error'; m.className='msg error'; m.style.display='block'; }
-}
-function backToStep1(){
-  document.getElementById('otp-step').style.display='none';
-  document.getElementById('cred-step').style.display='block';
-  document.getElementById('msg').style.display='none';
-}
-</script>
-</body></html>"""
+def decode_frame_from_bytes(raw_bytes):
+    """
+    Decode frame từ raw bytes.
+    
+    Args:
+        raw_bytes: Raw bytes của ảnh JPEG
+    
+    Returns:
+        numpy.ndarray: Frame ở định dạng BGR (OpenCV)
+    """
+    img_array = np.frombuffer(raw_bytes, dtype=np.uint8)
+    frame = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+    return frame
 
 
-# ===== AI Processor / Driver State Detection =====
-ai_processor = None
-processing_stats = {
-    "total_frames": 0,
-    "processed_frames": 0,
-    "start_time": time.time(),
-    "last_update": time.time(),
-}
-
-# History
-history_file = "history.json"
-history_lock = threading.Lock()
-MAX_HISTORY_ITEMS = 1000
-
-
-def init_ai_processor():
-    global ai_processor
-    camera_params_path = os.path.join("driver_state_detection", "camera_params.json")
-    if os.path.exists(camera_params_path):
-        ai_processor = AIProcessor(camera_params=camera_params_path)
-    else:
-        ai_processor = AIProcessor()
-    logger.info("AI Processor initialized")
-
-
-def load_history():
-    try:
-        if os.path.exists(history_file):
-            with open(history_file, "r", encoding="utf-8") as f:
-                return json.load(f)
-    except Exception as e:
-        logger.error(f"Failed to load history: {e}")
-    return []
-
-
-def save_history(history):
-    try:
-        with open(history_file, "w", encoding="utf-8") as f:
-            json.dump(history, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        logger.error(f"Failed to save history: {e}")
-
-
-# ===== Auth Routes =====
-@app.route("/register", methods=["GET", "POST"])
-@limiter.limit("10 per hour", methods=["POST"])
-@csrf.exempt
-def register():
-    if session.get("user"):
-        return redirect(url_for("index"))
-
-    if request.method == "POST":
-        try:
-            if not request.is_json:
-                return jsonify({"error": "Content-Type must be application/json"}), 400
-            data = request.get_json(silent=True)
-            if data is None:
-                return jsonify({"error": "Invalid JSON"}), 400
-
-            username = (data.get("username") or "").strip()
-            password = data.get("password") or ""
-            otp = (data.get("otp") or "").strip()
-
-            users = load_users()
-
-            # Step 1: create QR
-            if not otp:
-                if not username or not password:
-                    return jsonify({"error": "Missing username or password"}), 400
-                if len(username) < 3:
-                    return jsonify({"error": "Username must be at least 3 characters"}), 400
-                if not username.isalnum():
-                    return jsonify({"error": "Username must be alphanumeric"}), 400
-                if username in users:
-                    return jsonify({"error": "Username already exists"}), 400
-
-                ok, msg = validate_password(password)
-                if not ok:
-                    return jsonify({"error": msg}), 400
-
-                secret_2fa = generate_2fa_secret()
-                session["temp_register"] = {
-                    "username": username,
-                    "password": hash_password(password),
-                    "secret_2fa": secret_2fa,
-                    "timestamp": datetime.now().isoformat(),
-                }
-
-                qr_code = generate_qr_code(username, secret_2fa)
-                return (
-                    jsonify(
-                        {
-                            "status": "qr_generated",
-                            "message": "Scan QR with Google Authenticator",
-                            "qr_code": qr_code,
-                        }
-                    ),
-                    200,
-                )
-
-            # Step 2: verify OTP and finalize
-            if "temp_register" not in session:
-                return jsonify({"error": "Invalid register session"}), 400
-            temp = session["temp_register"]
-            reg_time = datetime.fromisoformat(temp["timestamp"])
-            if datetime.now() - reg_time > timedelta(minutes=10):
-                session.pop("temp_register", None)
-                return jsonify({"error": "Register session expired"}), 400
-            if not verify_2fa_code(temp["secret_2fa"], otp):
-                return jsonify({"error": "Invalid OTP"}), 400
-
-            users[temp["username"]] = {
-                "password": temp["password"],
-                "secret_2fa": temp["secret_2fa"],
-                "created_at": datetime.now().isoformat(),
-            }
-            save_users(users)
-            session.pop("temp_register", None)
-            return jsonify({"status": "success", "message": "Registered"}), 200
-
-        except Exception as e:
-            logger.error(f"Register error: {e}")
-            return jsonify({"error": "Server error"}), 500
-
-    return render_template_string(REGISTER_HTML)
+def draw_annotations_on_frame(frame, result):
+    """
+    Vẽ annotations (metrics, alerts) lên frame
+    
+    Args:
+        frame: numpy array (BGR format)
+        result: dict kết quả xử lý
+    
+    Returns:
+        numpy.ndarray: Frame đã vẽ annotations
+    """
+    annotated_frame = frame.copy()
+    
+    # Vẽ metrics
+    y_pos = 30
+    if result.get('ear') is not None:
+        cv2.putText(annotated_frame, f"EAR: {result['ear']:.4f}", 
+                   (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        y_pos += 25
+    
+    if result.get('gaze') is not None:
+        cv2.putText(annotated_frame, f"Gaze: {result['gaze']:.4f}", 
+                   (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        y_pos += 25
+    
+    cv2.putText(annotated_frame, f"PERCLOS: {result['perclos']:.4f}", 
+               (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+    y_pos += 25
+    
+    if result.get('roll') is not None:
+        cv2.putText(annotated_frame, f"Roll: {result['roll']:.1f}", 
+                   (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        y_pos += 25
+    
+    # Vẽ alerts
+    alert_y = 30
+    if result.get('asleep'):
+        cv2.putText(annotated_frame, "ASLEEP!", 
+                   (annotated_frame.shape[1] - 150, alert_y), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+        alert_y += 30
+    
+    if result.get('tired'):
+        cv2.putText(annotated_frame, "TIRED!", 
+                   (annotated_frame.shape[1] - 150, alert_y), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 165, 255), 2)
+        alert_y += 30
+    
+    if result.get('looking_away'):
+        cv2.putText(annotated_frame, "LOOKING AWAY!", 
+                   (annotated_frame.shape[1] - 150, alert_y), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+        alert_y += 30
+    
+    if result.get('distracted'):
+        cv2.putText(annotated_frame, "DISTRACTED!", 
+                   (annotated_frame.shape[1] - 150, alert_y), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+    
+    # Vẽ FPS
+    cv2.putText(annotated_frame, f"FPS: {result.get('fps', 0):.1f}", 
+               (10, annotated_frame.shape[0] - 10), 
+               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
+    
+    return annotated_frame
 
 
-@app.route("/login", methods=["GET", "POST"])
-@limiter.limit("10 per hour", methods=["POST"])
-@csrf.exempt
-def login():
-    if request.method == "GET" and session.get("user"):
-        return redirect(url_for("index"))
-
-    if request.method == "POST":
-        data = request.get_json(silent=True) or {}
-        username = (data.get("username") or "").strip()
-        password = data.get("password") or ""
-        otp = (data.get("otp") or "").strip()
-
-        users = load_users()
-
-        # Step 1: username/password
-        if not otp:
-            is_locked, locked_until = is_account_locked(username)
-            if is_locked:
-                minutes_left = int((locked_until - datetime.now()).total_seconds() / 60)
-                return jsonify({"error": f"Account locked. Try again in {minutes_left} minutes"}), 403
-
-            if username not in users:
-                record_failed_login(username)
-                return jsonify({"error": "Invalid credentials"}), 400
-
-            if hash_password(password) != users[username].get("password"):
-                record_failed_login(username)
-                return jsonify({"error": "Invalid credentials"}), 400
-
-            session["temp_login"] = {"username": username, "timestamp": datetime.now().isoformat()}
-            return jsonify({"status": "otp_required", "message": "Enter OTP from Authenticator"}), 200
-
-        # Step 2: OTP
-        if "temp_login" not in session:
-            return jsonify({"error": "Invalid login session"}), 400
-        temp = session["temp_login"]
-        login_time = datetime.fromisoformat(temp["timestamp"])
-        if datetime.now() - login_time > timedelta(minutes=5):
-            session.pop("temp_login", None)
-            return jsonify({"error": "Login session expired"}), 400
-
-        user = users.get(temp["username"]) or {}
-        if not verify_2fa_code(user.get("secret_2fa", ""), otp):
-            return jsonify({"error": "Invalid OTP"}), 400
-
-        session["user"] = temp["username"]
-        session.permanent = True
-        session.pop("temp_login", None)
-        reset_failed_login(temp["username"])
-        return jsonify({"status": "success", "message": "Logged in", "redirect": "/"}), 200
-
-    return render_template_string(LOGIN_HTML)
-
-
-@app.route("/logout")
-def logout():
-    session.clear()
-    return redirect(url_for("login"))
-
-
-# ===== Web UI =====
-@app.route("/")
-def index():
-    if "user" not in session:
-        return redirect(url_for("login"))
-    return render_template(
-        "index.html",
-        username=session.get("user"),
-        speech_count=0,
-        sign_count=0,
-        speech_data=[],
-        sign_data=[],
-    )
-
-
-# ===== API =====
-@app.route("/api/health", methods=["GET"])
-@limiter.limit("100 per minute")
-def health():
-    return jsonify(
-        {
-            "status": "healthy",
-            "ai_processor_ready": ai_processor is not None,
-            "uptime": time.time() - processing_stats["start_time"],
-        }
-    )
-
-
-@app.route("/api/process_frame", methods=["POST"])
-@auth_or_api_key_required
-@csrf.exempt
-@limiter.exempt  # high-frequency
-def process_frame():
-    global processing_stats
-    try:
-        json_body = request.get_json(silent=True) if request.is_json else None
-
-        if "image" not in request.files and not (json_body and json_body.get("frame")):
-            return jsonify({"error": "No frame"}), 400
-
-        if "image" in request.files:
-            frame_bytes = request.files["image"].read()
-            nparr = np.frombuffer(frame_bytes, np.uint8)
-            frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        else:
-            frame_data = (json_body or {}).get("frame", "")
-            if frame_data.startswith("data:image"):
-                frame_data = frame_data.split(",", 1)[1]
-            frame_bytes = base64.b64decode(frame_data)
-            nparr = np.frombuffer(frame_bytes, np.uint8)
-            frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-
-        if frame is None:
-            return jsonify({"error": "Decode failed"}), 400
-
-        processing_stats["total_frames"] += 1
-
-        if ai_processor is None:
-            return jsonify({"error": "AI Processor not ready"}), 500
-
-        result = ai_processor.process_frame(frame)
-        processing_stats["processed_frames"] += 1
-        processing_stats["last_update"] = time.time()
-
-        elapsed = time.time() - processing_stats["start_time"]
-        fps = processing_stats["processed_frames"] / elapsed if elapsed > 0 else 0
-
-        if result.get("processed_frame") is not None:
-            ok, buffer = cv2.imencode(".jpg", result["processed_frame"], [cv2.IMWRITE_JPEG_QUALITY, 85])
-            if ok:
-                frame_base64 = base64.b64encode(buffer).decode("utf-8")
-                result["processed_frame"] = f"data:image/jpeg;base64,{frame_base64}"
+def generate_mjpeg_stream():
+    """
+    Generator để tạo MJPEG stream từ latest_processed_frame
+    """
+    global latest_processed_frame
+    
+    while True:
+        with frame_lock:
+            if latest_processed_frame is not None:
+                frame = latest_processed_frame.copy()
             else:
-                result["processed_frame"] = None
-
-        result["fps"] = round(fps, 2)
-        result["timestamp"] = datetime.now().isoformat()
-        return jsonify(result)
-
-    except Exception as e:
-        logger.error(f"process_frame error: {e}")
-        return jsonify({"error": "Processing error"}), 500
-
-
-@app.route("/api/stats", methods=["GET"])
-@auth_or_api_key_required
-@limiter.exempt
-def get_stats():
-    elapsed = time.time() - processing_stats["start_time"]
-    fps = processing_stats["processed_frames"] / elapsed if elapsed > 0 else 0
-    return jsonify(
-        {
-            "total_frames": processing_stats["total_frames"],
-            "processed_frames": processing_stats["processed_frames"],
-            "fps": round(fps, 2),
-            "uptime": round(elapsed, 2),
-            "last_update": processing_stats["last_update"],
-        }
-    )
+                # Tạo frame placeholder nếu chưa có frame
+                frame = np.zeros((480, 640, 3), dtype=np.uint8)
+                cv2.putText(frame, "Waiting for stream...", 
+                           (180, 240), cv2.FONT_HERSHEY_SIMPLEX, 
+                           1, (255, 255, 255), 2)
+        
+        # Encode frame thành JPEG
+        _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        frame_bytes = buffer.tobytes()
+        
+        # Tạo multipart response cho MJPEG stream
+        yield (b'--frame\r\n'
+               b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+        
+        # Giảm CPU usage
+        time.sleep(0.033)  # ~30 FPS
 
 
-@app.route("/api/reset", methods=["POST"])
-@auth_or_api_key_required
-@csrf.exempt
-@limiter.limit("30 per hour")
-def reset_stats():
-    global processing_stats
-    processing_stats = {
-        "total_frames": 0,
-        "processed_frames": 0,
-        "start_time": time.time(),
-        "last_update": time.time(),
-    }
-    if ai_processor:
-        ai_processor.reset()
-    return jsonify({"message": "Reset"})
-
-
-@app.route("/api/history", methods=["GET"])
-@auth_or_api_key_required
-@limiter.exempt
-def get_history():
-    with history_lock:
-        history = load_history()
-        history.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
-        history = history[:MAX_HISTORY_ITEMS]
-    return jsonify({"history": history})
-
-
-@app.route("/api/history", methods=["POST"])
-@auth_or_api_key_required
-@csrf.exempt
-@limiter.exempt
-def add_history():
-    try:
-        data = request.get_json(silent=True) or {}
-        if not data:
-            return jsonify({"error": "No data"}), 400
-
-        has_alert = bool(
-            data.get("asleep", False)
-            or data.get("tired", False)
-            or data.get("looking_away", False)
-            or data.get("distracted", False)
+def process_frame(frame):
+    """
+    Xử lý frame và trả về các chỉ số.
+    
+    Args:
+        frame: numpy array (BGR format)
+    
+    Returns:
+        dict: Dictionary chứa các chỉ số
+    """
+    global prev_time, fps_value, attention_scorer, processed_frames_count
+    
+    # Tăng số frame đã xử lý
+    processed_frames_count += 1
+    
+    # Tính FPS
+    t_now = time.perf_counter()
+    elapsed_time = t_now - prev_time
+    prev_time = t_now
+    
+    if elapsed_time > 0:
+        fps_value = round(1 / elapsed_time, 2)
+    
+    # Chuyển đổi frame sang grayscale
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    frame_size = (frame.shape[1], frame.shape[0])
+    
+    # Tạo 3-channel grayscale image cho MediaPipe
+    gray_3ch = np.stack([gray, gray, gray], axis=2)
+    
+    # Detect face landmarks
+    results = face_mesh_detector.process(gray_3ch)
+    
+    # Khởi tạo giá trị mặc định
+    ear = None
+    gaze = None
+    roll = None
+    pitch = None
+    yaw = None
+    asleep = False
+    tired = False
+    looking_away = False
+    distracted = False
+    perclos = 0.0
+    
+    # Nếu phát hiện được khuôn mặt
+    if results.multi_face_landmarks:
+        # Lấy landmarks của khuôn mặt đầu tiên
+        landmarks = get_landmarks(results.multi_face_landmarks)
+        
+        # Tính EAR (Eye Aspect Ratio)
+        ear = eye_detector.get_EAR(landmarks=landmarks)
+        
+        # Tính PERCLOS (rolling window)
+        tired, perclos = attention_scorer.get_rolling_PERCLOS(t_now, ear)
+        
+        # Tính Gaze Score
+        gaze = eye_detector.get_Gaze_Score(
+            frame=gray_3ch, landmarks=landmarks, frame_size=frame_size
         )
-        if not has_alert:
-            return jsonify({"message": "No alert"})
+        
+        # Tính Head Pose
+        _, roll, pitch, yaw = head_pose_estimator.get_pose(
+            frame=frame, landmarks=landmarks, frame_size=frame_size
+        )
+        
+        # Chuyển đổi roll, pitch, yaw từ numpy array sang float
+        if roll is not None:
+            roll = float(roll[0])
+        if pitch is not None:
+            pitch = float(pitch[0])
+        if yaw is not None:
+            yaw = float(yaw[0])
+        
+        # Đánh giá trạng thái
+        asleep, looking_away, distracted = attention_scorer.eval_scores(
+            t_now=t_now,
+            ear_score=ear,
+            gaze_score=gaze,
+            head_roll=roll,
+            head_pitch=pitch,
+            head_yaw=yaw,
+        )
+    
+    # Throttle (giới hạn tần suất) cho các cảnh báo không nghiêm trọng
+    global last_alert_times
+    current_time = time.perf_counter()
+    
+    # ASLEEP luôn gửi ngay lập tức (nguy hiểm nhất)
+    send_asleep = bool(asleep)
+    
+    # TIRED: chỉ gửi nếu đã qua 6 giây hoặc trạng thái thay đổi
+    if tired and (current_time - last_alert_times['tired'] >= ALERT_THROTTLE_SECONDS):
+        send_tired = True
+        last_alert_times['tired'] = current_time
+    else:
+        send_tired = False
+    
+    # LOOKING_AWAY: chỉ gửi nếu đã qua 6 giây
+    if looking_away and (current_time - last_alert_times['looking_away'] >= ALERT_THROTTLE_SECONDS):
+        send_looking_away = True
+        last_alert_times['looking_away'] = current_time
+    else:
+        send_looking_away = False
+    
+    # DISTRACTED: chỉ gửi nếu đã qua 6 giây
+    if distracted and (current_time - last_alert_times['distracted'] >= ALERT_THROTTLE_SECONDS):
+        send_distracted = True
+        last_alert_times['distracted'] = current_time
+    else:
+        send_distracted = False
+    
+    # Chuẩn bị response
+    response = {
+        "ear": round(ear, 4) if ear is not None else None,
+        "gaze": round(gaze, 4) if gaze is not None else None,
+        "perclos": round(perclos, 4),
+        "roll": round(roll, 2) if roll is not None else None,
+        "pitch": round(pitch, 2) if pitch is not None else None,
+        "yaw": round(yaw, 2) if yaw is not None else None,
+        "asleep": send_asleep,           # Luôn gửi ngay
+        "tired": send_tired,             # Throttled 6s
+        "looking_away": send_looking_away,  # Throttled 6s
+        "distracted": send_distracted,   # Throttled 6s
+        "fps": fps_value,
+    }
+    
+    return response
 
-        history_item = {
-            "timestamp": data.get("timestamp", datetime.now().isoformat()),
-            "asleep": bool(data.get("asleep", False)),
-            "tired": bool(data.get("tired", False)),
-            "looking_away": bool(data.get("looking_away", False)),
-            "distracted": bool(data.get("distracted", False)),
-            "ear": data.get("ear"),
-            "gaze": data.get("gaze"),
-            "perclos": data.get("perclos"),
-            "roll": data.get("roll"),
-            "pitch": data.get("pitch"),
-            "yaw": data.get("yaw"),
-        }
 
-        with history_lock:
-            history = load_history()
-            history.append(history_item)
-            if len(history) > MAX_HISTORY_ITEMS:
-                history = history[-MAX_HISTORY_ITEMS:]
-            save_history(history)
+# ============================================================================
+# API Endpoints
+# ============================================================================
 
-        return jsonify({"message": "Added", "item": history_item})
+@app.route('/')
+def index():
+    """
+    Trang chủ - Dashboard giao diện web
+    """
+    return render_template('index.html')
 
+
+@app.route('/api/health', methods=['GET'])
+def health_check():
+    """
+    Endpoint để kiểm tra server có sẵn sàng không.
+    """
+    return jsonify({
+        "status": "healthy",
+        "message": "Server đang hoạt động",
+        "timestamp": datetime.now().isoformat()
+    }), 200
+
+
+@app.route('/api/process_frame', methods=['POST'])
+def process_frame_endpoint():
+    """
+    Endpoint chính để nhận và xử lý frame từ Raspberry Pi client.
+    
+    Hỗ trợ 2 định dạng:
+    1. JSON với base64: {"frame": "data:image/jpeg;base64,..."}
+    2. Raw bytes: Content-Type: application/octet-stream
+    """
+    global latest_frame, latest_processed_frame, last_result
+    
+    try:
+        start_time_processing = time.perf_counter()
+        
+        # Kiểm tra Content-Type
+        content_type = request.content_type
+        
+        if 'application/json' in content_type:
+            # Nhận frame dưới dạng JSON base64
+            data = request.get_json()
+            
+            if not data or 'frame' not in data:
+                return jsonify({
+                    "error": "Missing 'frame' field in JSON"
+                }), 400
+            
+            base64_string = data['frame']
+            frame = decode_frame_from_base64(base64_string)
+            
+        elif 'application/octet-stream' in content_type or 'image/' in content_type:
+            # Nhận frame dưới dạng raw bytes
+            raw_bytes = request.get_data()
+            
+            if not raw_bytes:
+                return jsonify({
+                    "error": "Empty request body"
+                }), 400
+            
+            frame = decode_frame_from_bytes(raw_bytes)
+            
+        else:
+            return jsonify({
+                "error": f"Unsupported Content-Type: {content_type}"
+            }), 400
+        
+        # Kiểm tra frame có hợp lệ không
+        if frame is None or frame.size == 0:
+            return jsonify({
+                "error": "Failed to decode frame"
+            }), 400
+        
+        # Lưu frame gốc vào biến global để stream
+        with frame_lock:
+            latest_frame = frame.copy()
+        
+        # Xử lý frame và vẽ annotations
+        result = process_frame(frame)
+        
+        # Lưu kết quả xử lý mới nhất
+        with frame_lock:
+            last_result = result
+            # Tạo frame đã xử lý với annotations nếu cần
+            latest_processed_frame = draw_annotations_on_frame(frame, result)
+        
+        # Tính thời gian xử lý
+        processing_time = time.perf_counter() - start_time_processing
+        
+        # Log ngắn gọn
+        face_detected = result['ear'] is not None
+        status_flags = []
+        if result['asleep']:
+            status_flags.append('🚨 ASLEEP')
+        if result['tired']:
+            status_flags.append('⚠️ TIRED')
+        if result['looking_away']:
+            status_flags.append('👀 LOOKING_AWAY')
+        if result['distracted']:
+            status_flags.append('💭 DISTRACTED')
+        
+        status_str = ', '.join(status_flags) if status_flags else '✅ NORMAL'
+        
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] "
+              f"Face: {'✓' if face_detected else '✗'} | "
+              f"EAR: {result['ear'] if result['ear'] else 'N/A'} | "
+              f"Status: {status_str} | "
+              f"Process: {processing_time*1000:.1f}ms")
+        
+        return jsonify(result), 200
+        
     except Exception as e:
-        logger.error(f"add_history error: {e}")
-        return jsonify({"error": "Server error"}), 500
+        print(f"❌ Error processing frame: {e}")
+        import traceback
+        traceback.print_exc()
+        
+        return jsonify({
+            "error": str(e),
+            "ear": None,
+            "gaze": None,
+            "perclos": 0.0,
+            "roll": None,
+            "pitch": None,
+            "yaw": None,
+            "asleep": False,
+            "tired": False,
+            "looking_away": False,
+            "distracted": False,
+            "fps": 0.0
+        }), 500
 
 
-@app.route("/api/history/clear", methods=["POST"])
-@auth_or_api_key_required
-@csrf.exempt
-@limiter.limit("30 per hour")
+@app.route('/api/stats', methods=['GET'])
+def get_stats():
+    """
+    Endpoint để lấy thống kê server
+    """
+    global processed_frames_count, start_time
+    
+    uptime = time.perf_counter() - start_time
+    
+    return jsonify({
+        "processed_frames": processed_frames_count,
+        "uptime": int(uptime),
+        "fps": fps_value
+    }), 200
+
+
+@app.route('/api/reset', methods=['POST'])
+def reset_stats():
+    """
+    Endpoint để reset thống kê
+    """
+    global processed_frames_count, start_time, attention_scorer
+    
+    processed_frames_count = 0
+    start_time = time.perf_counter()
+    
+    # Reset attention scorer
+    t_now = time.perf_counter()
+    attention_scorer = AttentionScorer(
+        t_now=t_now,
+        ear_thresh=EAR_THRESH,
+        gaze_thresh=GAZE_THRESH,
+        perclos_thresh=PERCLOS_THRESH,
+        roll_thresh=ROLL_THRESH,
+        pitch_thresh=PITCH_THRESH,
+        yaw_thresh=YAW_THRESH,
+        ear_time_thresh=EAR_TIME_THRESH,
+        gaze_time_thresh=GAZE_TIME_THRESH,
+        pose_time_thresh=POSE_TIME_THRESH,
+        verbose=False,
+    )
+    
+    print("🔄 Đã reset thống kê")
+    
+    return jsonify({
+        "status": "ok",
+        "message": "Đã reset thống kê"
+    }), 200
+
+
+@app.route('/api/history', methods=['GET', 'POST'])
+def manage_history():
+    """
+    Endpoint để quản lý lịch sử
+    - GET: Lấy danh sách lịch sử
+    - POST: Thêm mục mới vào lịch sử
+    """
+    global history_data
+    
+    if request.method == 'GET':
+        # Trả về lịch sử (mới nhất ở đầu)
+        return jsonify({
+            "history": list(reversed(history_data))
+        }), 200
+    
+    elif request.method == 'POST':
+        try:
+            data = request.get_json()
+            
+            # Thêm timestamp nếu chưa có
+            if 'timestamp' not in data:
+                data['timestamp'] = datetime.now().isoformat()
+            
+            # Thêm vào lịch sử
+            history_data.append(data)
+            
+            # Giới hạn kích thước lịch sử
+            if len(history_data) > MAX_HISTORY_SIZE:
+                history_data.pop(0)
+            
+            return jsonify({
+                "status": "ok",
+                "message": "Đã thêm vào lịch sử"
+            }), 200
+            
+        except Exception as e:
+            return jsonify({
+                "error": str(e)
+            }), 500
+
+
+@app.route('/api/history/clear', methods=['POST'])
 def clear_history():
-    with history_lock:
-        save_history([])
-    return jsonify({"message": "Cleared"})
+    """
+    Endpoint để xóa toàn bộ lịch sử
+    """
+    global history_data
+    
+    history_data = []
+    
+    print("🗑️  Đã xóa lịch sử")
+    
+    return jsonify({
+        "status": "ok",
+        "message": "Đã xóa lịch sử"
+    }), 200
 
 
-if __name__ == "__main__":
-    logger.info("Starting server...")
-    init_ai_processor()
-    logger.info("Server ready: http://localhost:5000")
-    app.run(host="0.0.0.0", port=5000, debug=True, threaded=True)
+@app.route('/video_feed')
+def video_feed():
+    """
+    Endpoint để stream video MJPEG từ Raspberry Pi
+    """
+    return Response(generate_mjpeg_stream(),
+                    mimetype='multipart/x-mixed-replace; boundary=frame')
+
+
+@app.route('/api/latest_result', methods=['GET'])
+def get_latest_result():
+    """
+    Endpoint để lấy kết quả xử lý mới nhất (cho frontend polling)
+    """
+    global last_result
+    
+    if last_result is None:
+        return jsonify({
+            "ear": None,
+            "gaze": None,
+            "perclos": 0.0,
+            "roll": None,
+            "pitch": None,
+            "yaw": None,
+            "asleep": False,
+            "tired": False,
+            "looking_away": False,
+            "distracted": False,
+            "fps": 0.0
+        }), 200
+    
+    return jsonify(last_result), 200
+
+
+@app.route('/logout')
+def logout():
+    """
+    Endpoint logout (placeholder - chưa có authentication)
+    """
+    return render_template('index.html')
+
+
+# ============================================================================
+# Main
+# ============================================================================
+
+if __name__ == '__main__':
+    print("\n" + "="*60)
+    print("🚗 DRIVER STATE DETECTION SERVER")
+    print("="*60)
+    print(f"📍 Endpoints:")
+    print(f"   GET  /api/health        - Health check")
+    print(f"   POST /api/process_frame - Xử lý frame")
+    print(f"\n⚙️  Thông số:")
+    print(f"   EAR Threshold:      {EAR_THRESH}")
+    print(f"   Gaze Threshold:     {GAZE_THRESH}")
+    print(f"   PERCLOS Threshold:  {PERCLOS_THRESH}")
+    print(f"   Roll/Pitch/Yaw:     {ROLL_THRESH}°/{PITCH_THRESH}°/{YAW_THRESH}°")
+    print(f"\n🔔 Alert Throttling:")
+    print(f"   ASLEEP:             Gửi ngay lập tức (nguy hiểm)")
+    print(f"   TIRED:              {ALERT_THROTTLE_SECONDS}s mỗi lần")
+    print(f"   LOOKING_AWAY:       {ALERT_THROTTLE_SECONDS}s mỗi lần")
+    print(f"   DISTRACTED:         {ALERT_THROTTLE_SECONDS}s mỗi lần")
+    print("="*60 + "\n")
+    
+    # Chạy Flask server
+    # host='0.0.0.0' để cho phép kết nối từ các máy khác trong mạng
+    app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
+
