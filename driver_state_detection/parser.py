@@ -4,7 +4,6 @@ import argparse
 def get_args():
     parser = argparse.ArgumentParser(description="Driver State Detection")
 
-    # selection the camera number, default is 0 (webcam)
     parser.add_argument(
         "-c",
         "--camera",
@@ -20,7 +19,6 @@ def get_args():
         help="Path to the camera parameters file (JSON or YAML).",
     )
 
-    # visualisation parameters
     parser.add_argument(
         "--show_fps",
         type=bool,
@@ -57,7 +55,6 @@ def get_args():
         help="Prints additional info, default is false",
     )
 
-    # Attention Scorer parameters (EAR, Gaze Score, Pose)
     parser.add_argument(
         "--smooth_factor",
         type=float,
@@ -122,7 +119,5 @@ def get_args():
         help="Sets the Pose time threshold (seconds) for the Attention Scorer, default is 2.5 seconds",
     )
 
-    # parse the arguments and store them in the args variable dictionary
     args, _ = parser.parse_known_args()
-
     return args
