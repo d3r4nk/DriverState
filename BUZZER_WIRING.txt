@@ -1,0 +1,234 @@
+================================================================================
+🔊 HƯỚNG DẪN KẾT NỐI BUZZER - RASPBERRY PI
+================================================================================
+
+📌 PHẦN CỨNG CẦN:
+   - Raspberry Pi (3/4/Zero)
+   - Active Buzzer (hoặc Passive Buzzer)
+   - Dây jumper female-to-female (2 sợi)
+
+================================================================================
+🔌 SƠ ĐỒ KẾT NỐI:
+================================================================================
+
+   Raspberry Pi GPIO          Active Buzzer
+   ┌──────────────┐           ┌──────────┐
+   │              │           │          │
+   │  GPIO 17     │───────────│    (+)   │
+   │  (Pin 11)    │  Đỏ       │          │
+   │              │           │          │
+   │  GND         │───────────│    (-)   │
+   │  (Pin 6)     │  Đen      │          │
+   │              │           │          │
+   └──────────────┘           └──────────┘
+
+================================================================================
+📍 RASPBERRY PI PINOUT (GPIO BCM):
+================================================================================
+
+    3V3  (1) (2)  5V       
+  GPIO2  (3) (4)  5V       
+  GPIO3  (5) (6)  GND      ← Buzzer (-) có thể cắm đây
+  GPIO4  (7) (8)  GPIO14   
+    GND  (9) (10) GPIO15   
+ GPIO17 (11) (12) GPIO18   ← Buzzer (+) cắm đây (GPIO 17)
+ GPIO27 (13) (14) GND      
+ GPIO22 (15) (16) GPIO23   
+    3V3 (17) (18) GPIO24   
+ GPIO10 (19) (20) GND      
+  GPIO9 (21) (22) GPIO25   
+ GPIO11 (23) (24) GPIO8    
+    GND (25) (26) GPIO7    
+
+BUZZER CONNECTIONS:
+   Pin 11 (GPIO 17) → Buzzer (+) [Đỏ]
+   Pin 6  (GND)     → Buzzer (-) [Đen]
+
+================================================================================
+🔧 CÁCH KẾT NỐI:
+================================================================================
+
+Bước 1: TẮT Raspberry Pi trước khi kết nối
+   sudo shutdown -h now
+
+Bước 2: Kết nối buzzer
+   - Dây ĐỎ (Buzzer +) → Pin 11 (GPIO 17)
+   - Dây ĐEN (Buzzer -) → Pin 6 (GND)
+
+Bước 3: BẬT Raspberry Pi
+   (Cấp nguồn lại)
+
+Bước 4: Test buzzer
+   python buzzer_setup.py
+
+   Hoặc với sudo nếu cần:
+   sudo python buzzer_setup.py
+
+================================================================================
+⚠️  LƯU Ý QUAN TRỌNG:
+================================================================================
+
+1. PHÂN BIỆT ACTIVE vs PASSIVE BUZZER:
+   
+   ✅ Active Buzzer (Khuyên dùng):
+      - Có mạch dao động bên trong
+      - Chỉ cần cấp nguồn là kêu
+      - Âm thanh cố định
+      - Dễ dùng hơn
+   
+   ⚠️  Passive Buzzer:
+      - Cần PWM signal để kêu
+      - Code phức tạp hơn
+      - Có thể thay đổi tần số âm thanh
+
+2. ĐIỆN ÁP:
+   - GPIO Raspberry Pi: 3.3V
+   - Buzzer nên là 3.3V hoặc 5V
+   - Nếu dùng 5V buzzer → cần thêm transistor
+
+3. AN TOÀN:
+   - Không kết nối sai cực tính
+   - Không để buzzer kêu liên tục quá lâu
+   - Tắt nguồn trước khi kết nối/tháo
+
+================================================================================
+🧪 TEST BUZZER:
+================================================================================
+
+1. Test đơn giản bằng Python:
+   
+   python buzzer_setup.py
+
+   Script này sẽ:
+   - Test kêu 1 giây
+   - Test kêu 5 giây (như cảnh báo)
+   - Test kêu 3 lần liên tiếp
+
+2. Test thủ công bằng terminal:
+   
+   # Setup GPIO
+   echo "17" > /sys/class/gpio/export
+   echo "out" > /sys/class/gpio/gpio17/direction
+   
+   # Bật buzzer
+   echo "1" > /sys/class/gpio/gpio17/value
+   
+   # (Đợi 2 giây)
+   
+   # Tắt buzzer
+   echo "0" > /sys/class/gpio/gpio17/value
+   
+   # Cleanup
+   echo "17" > /sys/class/gpio/unexport
+
+================================================================================
+🚀 CHẠY CLIENT VỚI BUZZER:
+================================================================================
+
+1. Cài đặt RPi.GPIO (nếu chưa có):
+   
+   sudo apt-get update
+   sudo apt-get install python3-rpi.gpio
+   
+   Hoặc:
+   pip install RPi.GPIO
+
+2. Chạy client:
+   
+   # Với buzzer (mặc định)
+   python raspberry_pi_client.py --server http://192.168.1.100:5000
+   
+   # Không buzzer
+   python raspberry_pi_client.py --server http://192.168.1.100:5000 --no-buzzer
+
+3. Khi có cảnh báo (asleep, tired, looking_away, distracted):
+   → Buzzer sẽ kêu 5 giây
+   → Thread riêng, không block xử lý video
+
+================================================================================
+🎯 HOẠT ĐỘNG:
+================================================================================
+
+Timeline:
+  00:00 - Server detect TIRED
+          → Server gửi {"tired": true}
+          → Client nhận → Buzzer BẬT (5s)
+  
+  00:01 - Server vẫn detect TIRED
+          → Server KHÔNG gửi (throttled)
+          → Buzzer vẫn đang kêu...
+  
+  00:03 - Server vẫn detect TIRED
+          → Server GỬI {"tired": true} (đã qua 3s)
+          → Client nhận → Buzzer BẬT lại (5s)
+  
+  00:05 - Buzzer từ lần 1 TẮT
+          Buzzer từ lần 2 vẫn kêu...
+
+LƯU Ý: Nếu nhiều cảnh báo cùng lúc, buzzer chỉ kêu 1 lần (không chồng chéo)
+
+================================================================================
+🐛 TROUBLESHOOTING:
+================================================================================
+
+❌ Lỗi: "No module named 'RPi.GPIO'"
+   → Cài đặt: sudo apt-get install python3-rpi.gpio
+
+❌ Lỗi: "Permission denied"
+   → Chạy với sudo: sudo python raspberry_pi_client.py ...
+   → Hoặc add user vào gpio group:
+     sudo usermod -a -G gpio $USER
+     (logout và login lại)
+
+❌ Buzzer không kêu:
+   → Kiểm tra kết nối phần cứng
+   → Test với: python buzzer_setup.py
+   → Kiểm tra buzzer có hỏng không (thử buzzer khác)
+
+❌ Buzzer kêu yếu:
+   → Có thể là buzzer 5V nhưng GPIO chỉ cho 3.3V
+   → Thêm transistor để khuếch đại
+
+❌ "GPIO already in use":
+   → Cleanup: sudo python -c "import RPi.GPIO as GPIO; GPIO.setmode(GPIO.BCM); GPIO.cleanup()"
+   → Hoặc restart Pi
+
+================================================================================
+💡 MẸO:
+================================================================================
+
+1. Volume điều chỉnh:
+   - Nếu quá to → Dùng resistor nối tiếp (100-330Ω)
+   - Nếu quá nhỏ → Dùng transistor NPN (2N2222, BC547)
+
+2. Chế độ kêu:
+   - Liên tục (mặc định): GPIO.HIGH trong 5s
+   - Ngắt quãng: Thêm loop trong buzzer_thread_func
+
+3. Multi-tone (chỉ passive buzzer):
+   - Dùng PWM để thay đổi tần số
+   - Code phức tạp hơn
+
+================================================================================
+✅ CHECKLIST:
+================================================================================
+
+Trước khi chạy:
+□ Đã kết nối buzzer đúng (GPIO 17 và GND)
+□ Đã cài RPi.GPIO
+□ Đã test với buzzer_setup.py thành công
+□ Server đang chạy
+□ Client có thể kết nối đến server
+
+================================================================================
+📞 HỖ TRỢ:
+================================================================================
+
+Nếu có vấn đề:
+1. Chạy: python buzzer_setup.py
+2. Kiểm tra kết nối phần cứng
+3. Kiểm tra buzzer có hỏng không
+4. Thử GPIO pin khác (thay đổi BUZZER_PIN trong code)
+
+================================================================================
+

@@ -191,10 +191,23 @@
                         <!-- Video Container -->
                         <div
                             class="relative bg-white rounded-[6px] overflow-hidden shadow-2xl group border-2 border-[#001858]">
-                            <video id="videoInput" class="w-full h-80 lg:h-96 object-cover rounded-[6px]" autoplay
-                                playsinline>
-                            </video>
-                            <canvas id="canvasOutput" class="absolute inset-0 w-full h-full rounded-[6px]"></canvas>
+                            <!-- MJPEG Stream từ Server (Raspberry Pi) -->
+                            <img id="videoStream" src="/video_feed"
+                                class="w-full h-80 lg:h-96 object-cover rounded-[6px]"
+                                alt="Video Stream from Raspberry Pi" onload="hideLoadingOverlay()"
+                                onerror="showStreamError()">
+
+                            <!-- Loading Overlay -->
+                            <div id="loadingOverlay"
+                                class="absolute inset-0 bg-[#001858] bg-opacity-90 flex items-center justify-center">
+                                <div class="text-center">
+                                    <div
+                                        class="w-16 h-16 border-4 border-[#8bd3dd] border-t-transparent rounded-full animate-spin mx-auto mb-4">
+                                    </div>
+                                    <p class="text-white font-bold text-lg">Đang chờ video stream...</p>
+                                    <p class="text-[#8bd3dd] text-sm mt-2">Vui lòng khởi động Raspberry Pi client</p>
+                                </div>
+                            </div>
 
                             <!-- Overlay Status -->
                             <div
@@ -209,76 +222,66 @@
                             </div>
                         </div>
 
-                        <!-- Controls -->
-                        <div
-                            class="flex flex-wrap gap-4 justify-center mt-10 pt-10 border-t border-[rgba(0,24,88,0.1)]">
-                            <button id="startBtn"
-                                class="btn-primary-custom px-10 py-5 rounded-[6px] font-semibold text-lg shadow-xl hover:shadow-2xl transition-all duration-500 flex items-center space-x-3 group">
-                                <svg class="w-6 h-6 group-hover:scale-110 transition-transform duration-300" fill="none"
-                                    stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                        d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z">
-                                    </path>
-                                </svg>
-                                <span>Bắt đầu</span>
-                            </button>
-                            <button id="stopBtn"
-                                class="btn-primary-custom px-10 py-5 rounded-[6px] font-semibold text-lg shadow-xl hover:shadow-2xl transition-all duration-500 flex items-center space-x-3 group"
-                                disabled>
-                                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                        d="M10 9v6m4-6v6"></path>
-                                </svg>
-                                <span>Dừng</span>
-                            </button>
-                            <button id="resetBtn"
-                                class="btn-primary-custom px-10 py-5 rounded-[6px] font-semibold text-lg shadow-xl hover:shadow-2xl transition-all duration-500 flex items-center space-x-3 group">
-                                <svg class="w-6 h-6 group-hover:rotate-180 transition-transform duration-500"
-                                    fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                        d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15">
-                                    </path>
-                                </svg>
-                                <span>Reset</span>
-                            </button>
+                        <!-- Status Display -->
+                        <div class="mt-10 pt-10 border-t border-[rgba(0,24,88,0.1)]">
+                            <div
+                                class="bg-gradient-to-r from-[rgba(139,211,221,0.2)] to-[rgba(245,130,174,0.2)] rounded-[6px] px-8 py-5 text-center">
+                                <div class="flex items-center justify-center space-x-3">
+                                    <div class="w-4 h-4 rounded-full bg-[#8bd3dd] animate-pulse"
+                                        id="statusIndicatorDot"></div>
+                                    <span class="text-xl font-bold text-[#001858]" id="statusIndicatorText">Đang theo
+                                        dõi realtime...</span>
+                                </div>
+                                <p class="text-sm text-[#4a5e8a] mt-2">Hệ thống tự động phân tích video từ Raspberry Pi
+                                </p>
+                            </div>
                         </div>
                     </div>
                 </div>
 
-                <!-- Statistics -->
-                <div class="glass-effect rounded-[6px] p-8 shadow-2xl">
-                    <h2 class="text-3xl font-bold text-headline mb-10 flex items-center space-x-4">
-                        <svg class="w-10 h-10 text-primary-custom" fill="none" stroke="currentColor"
-                            viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z">
-                            </path>
-                        </svg>
-                        <span>Thống kê</span>
-                    </h2>
-                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-8">
-                        <div
-                            class="stat-card stat-primary text-center p-8 rounded-[6px] hover:shadow-2xl transition-all duration-500 cursor-pointer group">
-                            <div
-                                class="stat-label text-muted font-semibold text-sm uppercase tracking-wider mb-4 group-hover:text-headline transition-colors">
-                                FPS</div>
-                            <div class="stat-value text-4xl lg:text-5xl font-black gradient-text" id="fpsValue">0</div>
+                <!-- History Panel - Moved Up -->
+                <div class="bg-custom-beige rounded-[6px] p-8 shadow-2xl border-2 border-[#001858]">
+                    <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between mb-8">
+                        <h2 class="text-3xl font-bold text-headline flex items-center space-x-4 mb-4 lg:mb-0">
+                            <svg class="w-10 h-10 text-primary-custom" fill="none" stroke="currentColor"
+                                viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                            </svg>
+                            <span>Lịch sử cảnh báo</span>
+                        </h2>
+                        <div class="flex flex-wrap gap-3">
+                            <button id="refreshHistoryBtn"
+                                class="btn-primary-custom px-6 py-3 rounded-[6px] font-bold shadow-xl hover:shadow-2xl transition-all duration-500 flex items-center space-x-2">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                        d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15">
+                                    </path>
+                                </svg>
+                                <span>Làm mới</span>
+                            </button>
+                            <button id="clearHistoryBtn"
+                                class="btn-warning-custom px-6 py-3 rounded-[6px] font-bold shadow-xl hover:shadow-2xl transition-all duration-500 flex items-center space-x-2">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                        d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16">
+                                    </path>
+                                </svg>
+                                <span>Xóa</span>
+                            </button>
                         </div>
-                        <div
-                            class="stat-card stat-secondary text-center p-8 rounded-[6px] hover:shadow-2xl transition-all duration-500 cursor-pointer group">
-                            <div
-                                class="stat-label text-muted font-semibold text-sm uppercase tracking-wider mb-4 group-hover:text-headline transition-colors">
-                                Frames đã xử lý</div>
-                            <div class="stat-value text-4xl lg:text-5xl font-black text-headline" id="processedFrames">0
-                            </div>
-                        </div>
-                        <div
-                            class="stat-card stat-time text-center p-8 rounded-[6px] hover:shadow-2xl transition-all duration-500 cursor-pointer group">
-                            <div
-                                class="stat-label text-muted font-semibold text-sm uppercase tracking-wider mb-4 group-hover:text-headline transition-colors">
-                                Thời gian hoạt động</div>
-                            <div class="stat-value text-4xl lg:text-5xl font-black text-primary-custom" id="uptime">0s
-                            </div>
+                    </div>
+                    <div class="bg-gradient-to-r from-white/60 to-[rgba(254,246,228,0.5)] rounded-[6px] p-6 border-2 border-dashed border-[rgba(0,24,88,0.15)] max-h-[500px] overflow-y-auto"
+                        id="historyList">
+                        <div class="text-center text-body">
+                            <svg class="w-16 h-16 mx-auto mb-4 text-[rgba(0,24,88,0.3)]" fill="none"
+                                stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10">
+                                </path>
+                            </svg>
+                            <p class="text-xl font-bold text-headline mb-2">Chưa có dữ liệu lịch sử</p>
+                            <p class="text-sm text-muted">Hệ thống sẽ tự động lưu khi phát hiện cảnh báo</p>
                         </div>
                     </div>
                 </div>
@@ -425,51 +428,6 @@
             </div>
         </div>
 
-        <!-- History Panel -->
-        <div class="mt-20 bg-custom-beige rounded-[6px] p-10 lg:p-16 shadow-2xl border-2 border-[#001858]">
-            <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between mb-12">
-                <h2 class="text-3xl font-bold text-headline flex items-center space-x-4 mb-6 lg:mb-0">
-                    <svg class="w-10 h-10 text-primary-custom" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                            d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-                    </svg>
-                    <span>Lịch sử biểu hiện</span>
-                </h2>
-                <div class="flex flex-wrap gap-4">
-                    <button id="refreshHistoryBtn"
-                        class="btn-primary-custom px-8 py-4 rounded-[6px] font-bold shadow-xl hover:shadow-2xl transition-all duration-500 flex items-center space-x-3">
-                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15">
-                            </path>
-                        </svg>
-                        <span>Làm mới</span>
-                    </button>
-                    <button id="clearHistoryBtn"
-                        class="btn-warning-custom px-8 py-4 rounded-[6px] font-bold shadow-xl hover:shadow-2xl transition-all duration-500 flex items-center space-x-3">
-                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16">
-                            </path>
-                        </svg>
-                        <span>Xóa lịch sử</span>
-                    </button>
-                </div>
-            </div>
-            <div class="history-list bg-gradient-to-r from-white/60 to-[rgba(254,246,228,0.5)] rounded-[6px] p-12 border-2 border-dashed border-[rgba(0,24,88,0.15)] flex items-center justify-center min-h-[240px]"
-                id="historyList">
-                <div class="text-center text-body">
-                    <svg class="w-20 h-20 mx-auto mb-6 text-[rgba(0,24,88,0.3)]" fill="none" stroke="currentColor"
-                        viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                            d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10">
-                        </path>
-                    </svg>
-                    <p class="text-2xl font-bold text-headline mb-3">Chưa có dữ liệu lịch sử</p>
-                    <p class="text-lg text-muted max-w-md mx-auto">Bắt đầu theo dõi để xem lịch sử trạng thái tài xế</p>
-                </div>
-            </div>
-        </div>
     </div>
 
     <!-- Connection Status - Floating -->

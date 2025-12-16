@@ -1,6 +1,26 @@
-numpy
-opencv-python
-mediapipe
-flask
-flask-cors
-requests
+# ===== Web Server =====
+Flask>=2.3,<3.1
+flask-cors>=4.0
+flask-wtf>=1.2
+flask-limiter>=3.5
+python-dotenv>=1.0
+
+# ===== SocketIO (Realtime) =====
+flask-socketio>=5.3
+simple-websocket>=1.0
+python-socketio>=5.11
+
+# ===== Security & Auth =====
+cryptography>=41.0
+pyotp>=2.9
+qrcode[pil]>=7.4
+
+# ===== Image / AI =====
+opencv-python>=4.8
+numpy>=1.24
+
+# ===== Client (Raspberry Pi) =====
+requests>=2.31
+
+# ===== Utils =====
+eventlet>=0.36
